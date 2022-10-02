@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 
 import requests
-from dotenv import load_dotenv
 import json
 import logging
 import sys
 from config import Config
 from datetime import datetime
 from helper import execute_pipeline
-
-load_dotenv()
 
 
 def main():
