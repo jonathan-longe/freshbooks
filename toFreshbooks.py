@@ -4,32 +4,15 @@ import requests
 from dotenv import load_dotenv
 import json
 import logging
-import os
 import sys
-import argparse
-import base64
+from config import Config
 from datetime import datetime
-import pytz
-from requests.auth import HTTPBasicAuth
 from helper import execute_pipeline
 
 load_dotenv()
 
-FRESHBOOK_TIME_ENTRY_URL = os.getenv("FRESHBOOK_TIME_ENTRY_URL")
-FRESHBOOK_BEARER_TOKEN = os.getenv("FRESHBOOK_BEARER_TOKEN")
-CLIENT_ID = os.getenv("CLIENT_ID")
-PROJECT_ID = os.getenv("PROJECT_ID")
-SERVICE_ID = os.getenv("SERVICE_ID")
-VANCOUVER_TZ_STRING = "America/Vancouver"
-VANCOUVER_TZ = pytz.timezone(VANCOUVER_TZ_STRING)
-UTC_TZ = pytz.timezone("UTC")
-WATSON_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
-
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--tag')
-    args = parser.parse_args()
     kwargs = execute_pipeline([
         {"try": decode_json_from_standard_input, "fail": []},
         {"try": loop_through_frames_and_send_to_freshbooks, "fail": []},
@@ -52,8 +35,8 @@ def loop_through_frames_and_send_to_freshbooks(**kwargs) -> tuple:
     frames = kwargs.get('frames')
     for frame in frames:
         payload = build_freshbooks_payload(frame)
-        headers = {"Authorization": FRESHBOOK_BEARER_TOKEN}
-        response = requests.post(FRESHBOOK_TIME_ENTRY_URL, json=payload, headers=headers)
+        headers = {"Authorization": Config.FRESHBOOK_BEARER_TOKEN}
+        response = requests.post(Config.FRESHBOOK_TIME_ENTRY_URL, json=payload, headers=headers)
         if response.status_code == 200:
             print(frame['start'] + " - " + frame['project'])
         else:
@@ -63,13 +46,14 @@ def loop_through_frames_and_send_to_freshbooks(**kwargs) -> tuple:
 
 def build_freshbooks_payload(frame: dict) -> dict:
     start = datetime.fromisoformat(frame['start'])
-    start_aware = start.replace(tzinfo=UTC_TZ)
+    start_aware = start.replace(tzinfo=Config.UTC_TZ)
     end = datetime.fromisoformat(frame['stop'])
-    duration = (end-start).total_seconds()
+    exact_duration = int((end-start).total_seconds())
+    duration = round_duration_to_quarter_hour(exact_duration)
     return {
         "time_entry": {
             "is_logged": True,
-            "duration": int(duration),
+            "duration": duration,
             "note": frame['project'],
             "internal": False,
             "retainer_id": None,
@@ -79,14 +63,30 @@ def build_freshbooks_payload(frame: dict) -> dict:
             "source": None,
             "started_at": start_aware.isoformat().replace("+00:00", ".000Z"),
             "local_started_at": None,
-            "local_timezone": VANCOUVER_TZ_STRING,
+            "local_timezone": Config.VANCOUVER_TZ_STRING,
             "billable": None,
             "billed": False,
             "identity_id": "10908883",
-            "client_id": CLIENT_ID,
-            "project_id": PROJECT_ID,
-            "service_id": SERVICE_ID}
+            "client_id": Config.CLIENT_ID,
+            "project_id": Config.PROJECT_ID,
+            "service_id": Config.SERVICE_ID}
     }
+
+
+def round_duration_to_quarter_hour(duration_seconds: int) -> int:
+    """
+    Time is billed in 15min increments.  Round inputted duration given in seconds to nearest 15min duration.
+    :param duration_seconds:
+    :return:
+    """
+    billable_unit_seconds = 15 * 60
+    number_billable_units, remainder = divmod(duration_seconds, billable_unit_seconds)
+    if remainder < Config.ROUNDING_SECONDS:
+        # number of seconds over billable unit is small -- don't bill it
+        return number_billable_units * billable_unit_seconds
+    else:
+        # number of seconds over billable unit exceed threshold - add another block of time
+        return (number_billable_units * billable_unit_seconds) + billable_unit_seconds
 
 
 if __name__ == "__main__":
